@@ -1,45 +1,39 @@
-var thumbUp = document.getElementsByClassName("fa-thumbs-up");
-var trash = document.getElementsByClassName("fa-trash");
+// one click listener for every vote and delete button
 
-Array.from(thumbUp).forEach(function(element) {
-      element.addEventListener('click', function(){
-        const name = this.parentNode.parentNode.childNodes[1].innerText
-        const msg = this.parentNode.parentNode.childNodes[3].innerText
-        const thumbUp = parseFloat(this.parentNode.parentNode.childNodes[5].innerText)
-        fetch('messages', {
-          method: 'put',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            'name': name,
-            'msg': msg,
-            'thumbUp':thumbUp
-          })
-        })
-        .then(response => {
-          if (response.ok) return response.json()
-        })
-        .then(data => {
-          console.log(data)
-          window.location.reload(true)
-        })
-      });
-});
+const messageList = document.querySelector(".messages");
 
-Array.from(trash).forEach(function(element) {
-      element.addEventListener('click', function(){
-        const name = this.parentNode.parentNode.childNodes[1].innerText
-        const msg = this.parentNode.parentNode.childNodes[3].innerText
-        fetch('messages', {
-          method: 'delete',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            'name': name,
-            'msg': msg
-          })
-        }).then(function (response) {
-          window.location.reload()
-        })
-      });
+const sendRequest = async (url, method, body) => {
+  const response = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Request failed with status ${response.status}`);
+  }
+  return response.json();
+};
+
+messageList?.addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+
+  const { id } = button.closest(".message").dataset;
+  const { action, type } = button.dataset;
+
+  button.disabled = true;
+
+  try {
+    if (action === "vote") {
+      await sendRequest(`/messages/${id}/vote`, "PUT", { type });
+    } else if (action === "delete") {
+      await sendRequest(`/messages/${id}`, "DELETE");
+    }
+    window.location.reload();
+  } catch (err) {
+    console.error(err);
+    alert("Something went wrong. Please try again.");
+    button.disabled = false;
+  }
 });

@@ -1,117 +1,143 @@
-module.exports = function(app, passport, db) {
+const mongoose = require("mongoose");
+const Message = require("./models/message");
 
-// normal routes ===============================================================
+const VOTE_TYPES = ["thumbUp", "thumbDown"];
 
-    // show the home page (will also have our login links)
-    app.get('/', function(req, res) {
-        res.render('index.ejs');
-    });
-
-    // PROFILE SECTION =========================
-    app.get('/profile', isLoggedIn, function(req, res) {
-        db.collection('messages').find().toArray((err, result) => {
-          if (err) return console.log(err)
-          res.render('profile.ejs', {
-            user : req.user,
-            messages: result
-          })
-        })
-    });
-
-    // LOGOUT ==============================
-    app.get('/logout', function(req, res) {
-        req.logout(() => {
-          console.log('User has logged out!')
-        });
-        res.redirect('/');
-    });
-
-// message board routes ===============================================================
-
-    app.post('/messages', (req, res) => {
-      db.collection('messages').save({name: req.body.name, msg: req.body.msg, thumbUp: 0, thumbDown:0}, (err, result) => {
-        if (err) return console.log(err)
-        console.log('saved to database')
-        res.redirect('/profile')
-      })
-    })
-
-    app.put('/messages', (req, res) => {
-      db.collection('messages')
-      .findOneAndUpdate({name: req.body.name, msg: req.body.msg}, {
-        $set: {
-          thumbUp:req.body.thumbUp + 1
-        }
-      }, {
-        sort: {_id: -1},
-        upsert: true
-      }, (err, result) => {
-        if (err) return res.send(err)
-        res.send(result)
-      })
-    })
-
-    app.delete('/messages', (req, res) => {
-      db.collection('messages').findOneAndDelete({name: req.body.name, msg: req.body.msg}, (err, result) => {
-        if (err) return res.send(500, err)
-        res.send('Message deleted!')
-      })
-    })
-
-// =============================================================================
-// AUTHENTICATE (FIRST LOGIN) ==================================================
-// =============================================================================
-
-    // locally --------------------------------
-        // LOGIN ===============================
-        // show the login form
-        app.get('/login', function(req, res) {
-            res.render('login.ejs', { message: req.flash('loginMessage') });
-        });
-
-        // process the login form
-        app.post('/login', passport.authenticate('local-login', {
-            successRedirect : '/profile', // redirect to the secure profile section
-            failureRedirect : '/login', // redirect back to the signup page if there is an error
-            failureFlash : true // allow flash messages
-        }));
-
-        // SIGNUP =================================
-        // show the signup form
-        app.get('/signup', function(req, res) {
-            res.render('signup.ejs', { message: req.flash('signupMessage') });
-        });
-
-        // process the signup form
-        app.post('/signup', passport.authenticate('local-signup', {
-            successRedirect : '/profile', // redirect to the secure profile section
-            failureRedirect : '/signup', // redirect back to the signup page if there is an error
-            failureFlash : true // allow flash messages
-        }));
-
-// =============================================================================
-// UNLINK ACCOUNTS =============================================================
-// =============================================================================
-// used to unlink accounts. for social accounts, just remove the token
-// for local account, remove email and password
-// user account will stay active in case they want to reconnect in the future
-
-    // local -----------------------------------
-    app.get('/unlink/local', isLoggedIn, function(req, res) {
-        var user            = req.user;
-        user.local.email    = undefined;
-        user.local.password = undefined;
-        user.save(function(err) {
-            res.redirect('/profile');
-        });
-    });
-
+// route middleware to make sure a user is logged in
+const isLoggedIn = (req, res, next) => {
+  if (req.isAuthenticated()) return next();
+  return res.redirect("/");
 };
 
-// route middleware to ensure user is logged in
-function isLoggedIn(req, res, next) {
-    if (req.isAuthenticated())
-        return next();
+// reject malformed ids before they reach the database
+const validateId = (req, res, next) => {
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    return res.status(400).json({ error: "Invalid message id." });
+  }
+  return next();
+};
 
-    res.redirect('/');
-}
+module.exports = (app, passport) => {
+  // normal routes =============================================================
+
+  app.get("/", (req, res) => {
+    res.render("index.ejs");
+  });
+
+  // PROFILE SECTION =========================
+  app.get("/profile", isLoggedIn, async (req, res, next) => {
+    try {
+      const messages = await Message.find().sort({ createdAt: -1 }).lean();
+      res.render("profile.ejs", { user: req.user, messages });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // LOGOUT ==================================
+  app.get("/logout", (req, res, next) => {
+    req.logout((err) => {
+      if (err) return next(err);
+      return res.redirect("/");
+    });
+  });
+
+  // message board routes ======================================================
+
+  // create a message (author comes from the logged-in user, not the form)
+  app.post("/messages", isLoggedIn, async (req, res, next) => {
+    try {
+      const msg = (req.body.msg || "").trim();
+      if (msg) {
+        await Message.create({ name: req.user.local.email, msg });
+      }
+      res.redirect("/profile");
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // thumbs up / thumbs down
+  app.put(
+    "/messages/:id/vote",
+    isLoggedIn,
+    validateId,
+    async (req, res, next) => {
+      const { type } = req.body;
+
+      if (!VOTE_TYPES.includes(type)) {
+        return res
+          .status(400)
+          .json({ error: "Vote type must be thumbUp or thumbDown." });
+      }
+
+      try {
+        const message = await Message.findByIdAndUpdate(
+          req.params.id,
+          { $inc: { [type]: 1 } },
+          { new: true },
+        );
+
+        if (!message)
+          return res.status(404).json({ error: "Message not found." });
+        return res.json(message);
+      } catch (err) {
+        return next(err);
+      }
+    },
+  );
+
+  // delete a message (only the author can delete their own)
+  app.delete(
+    "/messages/:id",
+    isLoggedIn,
+    validateId,
+    async (req, res, next) => {
+      try {
+        const deleted = await Message.findOneAndDelete({
+          _id: req.params.id,
+          name: req.user.local.email,
+        });
+
+        if (!deleted) {
+          return res
+            .status(404)
+            .json({ error: "Message not found, or you are not its author." });
+        }
+        return res.json({ message: "Message deleted!" });
+      } catch (err) {
+        return next(err);
+      }
+    },
+  );
+
+  // authentication ============================================================
+
+  // LOGIN ===================================
+  app.get("/login", (req, res) => {
+    res.render("login.ejs", { message: req.flash("loginMessage") });
+  });
+
+  app.post(
+    "/login",
+    passport.authenticate("local-login", {
+      successRedirect: "/profile",
+      failureRedirect: "/login",
+      failureFlash: true,
+    }),
+  );
+
+  // SIGNUP ==================================
+  app.get("/signup", (req, res) => {
+    res.render("signup.ejs", { message: req.flash("signupMessage") });
+  });
+
+  app.post(
+    "/signup",
+    passport.authenticate("local-signup", {
+      successRedirect: "/profile",
+      failureRedirect: "/signup",
+      failureFlash: true,
+    }),
+  );
+};

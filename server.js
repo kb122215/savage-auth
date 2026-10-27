@@ -2,53 +2,74 @@
 
 // set up ======================================================================
 // get all the tools we need
-var express  = require('express');
-var app      = express();
-var port     = process.env.PORT || 8080;
-const MongoClient = require('mongodb').MongoClient
-var mongoose = require('mongoose');
-var passport = require('passport');
-var flash    = require('connect-flash');
+require("dotenv").config();
 
-var morgan       = require('morgan');
-var cookieParser = require('cookie-parser');
-var bodyParser   = require('body-parser');
-var session      = require('express-session');
+const express = require("express");
+const mongoose = require("mongoose");
+const passport = require("passport");
+const flash = require("connect-flash");
+const morgan = require("morgan");
+const session = require("express-session");
 
-var configDB = require('./config/database.js');
+const configDB = require("./config/database");
 
-var db
+const app = express();
+const PORT = process.env.PORT || 8080;
 
 // configuration ===============================================================
-mongoose.connect(configDB.url, (err, database) => {
-  if (err) return console.log(err)
-  db = database
-  require('./app/routes.js')(app, passport, db);
-}); // connect to our database
+require("./config/passport")(passport); // register login/signup strategies
 
-require('./config/passport')(passport); // pass passport for configuration
+app.set("view engine", "ejs");
 
-// set up our express application
-app.use(morgan('dev')); // log every request to the console
-app.use(cookieParser()); // read cookies (needed for auth)
-app.use(bodyParser.json()); // get information from html forms
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.static('public'))
+app.use(morgan("dev")); // log every request to the console
+app.use(express.json()); // parse JSON bodies (fetch requests from main.js)
+app.use(express.urlencoded({ extended: true })); // parse HTML form bodies
+app.use(express.static("public"));
 
-
-app.set('view engine', 'ejs'); // set up ejs for templating
-
-// required for passport
-app.use(session({
-    secret: 'rcbootcamp2021b', // session secret
-    resave: true,
-    saveUninitialized: true
-}));
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "dev-only-secret-change-me",
+    resave: false,
+    saveUninitialized: false,
+  }),
+);
 app.use(passport.initialize());
 app.use(passport.session()); // persistent login sessions
-app.use(flash()); // use connect-flash for flash messages stored in session
+app.use(flash()); // flash messages stored in session
 
+// routes ======================================================================
+require("./app/routes")(app, passport);
+
+// 404 and error handlers (must come after routes)
+app.use((req, res) => {
+  res.status(404).send("Page not found.");
+});
+
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).send("Something went wrong. Please try again.");
+});
 
 // launch ======================================================================
-app.listen(port);
-console.log('The magic happens on port ' + port);
+const start = async () => {
+  if (!configDB.url) {
+    console.error(
+      "MONGO_URL is missing. Copy .env.example to .env and add your connection string.",
+    );
+    process.exit(1);
+  }
+
+  try {
+    await mongoose.connect(configDB.url, { dbName: configDB.dbName });
+    console.log(`Connected to MongoDB (database: ${configDB.dbName})`);
+
+    app.listen(PORT, () => {
+      console.log(`Server running at http://localhost:${PORT}`);
+    });
+  } catch (err) {
+    console.error("Could not connect to MongoDB:", err.message);
+    process.exit(1);
+  }
+};
+
+start();
